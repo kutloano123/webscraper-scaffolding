@@ -1,7 +1,7 @@
 {
   "name": "webscraper-scaffolding",
   "version": "1.0.0",
-  "description": "",
+  "description": "1. [Clone](https://docs.github.com/en/github/creating-cloning-and-archiving-repositories/cloning-a-repository-from-github/cloning-a-repository) this repository\r 1. Run `npm install`",
   "main": "webscraper.js",
   "type": "module",
   "scripts": {
@@ -24,5 +24,9 @@
     "eslint-config-prettier": "^8.3.0",
     "eslint-plugin-prettier": "^3.4.0",
     "prettier": "^2.3.1"
+  },
+  "dependencies": {
+    "jsdom": "^26.1.0",
+    "node-fetch": "^3.3.2"
   }
 }
