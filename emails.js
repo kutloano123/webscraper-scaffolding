@@ -1,7 +1,10 @@
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import fs from "fs";
 
-async function run() {
+puppeteer.use(StealthPlugin());
+
+(async () => {
   const browser = await puppeteer.launch({ headless: false });
   const page = await browser.newPage();
 
@@ -9,64 +12,61 @@ async function run() {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
   );
 
-  console.log("Opening IBBA main broker search page...");
+  console.log("Opening IBBA search page...");
   await page.goto("https://www.ibba.org/find-a-business-broker/", {
-    waitUntil: "networkidle2",
+    waitUntil: "domcontentloaded",
     timeout: 60000,
   });
 
-  // Wait for manual CAPTCHA if needed
-  const hasCaptcha = await page.$('.g-recaptcha, iframe[src*="recaptcha"]');
-  if (hasCaptcha) {
-    console.log("CAPTCHA detected. Please solve it manually in the browser.");
-    await page.waitForFunction(
-      () =>
-        !document.querySelector(".g-recaptcha") &&
-        !document.querySelector('iframe[src*="recaptcha"]'),
-      { timeout: 300000 }
-    );
+  // Check if there's a CAPTCHA
+  const recaptcha = await page.$('iframe[src*="recaptcha"]');
+  if (recaptcha) {
+    console.log("CAPTCHA detected. Please solve it manually...");
+    await page.waitForFunction(() => !document.querySelector('iframe[src*="recaptcha"]'), {
+      timeout: 180000,
+    });
     console.log("CAPTCHA solved.");
-  } else {
-    console.log("No CAPTCHA detected.");
   }
 
-  // Now navigate to the API endpoint and intercept response
-  const apiUrl = "https://www.ibba.org/wp-json/brokers/all";
+  await page.waitForTimeout(3000);
 
-  let jsonResponse = null;
-  page.on("response", async (response) => {
-    if (response.url() === apiUrl) {
-      try {
-        const json = await response.json();
-        jsonResponse = json;
-      } catch (e) {
-        console.error("Failed to parse JSON from API response:", e);
-      }
-    }
-  });
+  // Fill in zip code and select checkboxes
+  const input = await page.$('#zipSearchss');
+  if (input) await input.type("10001", { delay: 50 });
 
-  console.log("Navigating to API URL to get data...");
-  await page.goto(apiUrl, { waitUntil: "networkidle2", timeout: 60000 });
-
-  // Wait a bit to ensure response handler catches the data
-  await new Promise((r) => setTimeout(r, 3000));
-
-  if (!jsonResponse) {
-    console.error("Failed to get JSON data from API response.");
-    await browser.close();
-    return;
+  const checkboxes = await page.$$('input[type="checkbox"]');
+  for (let i = 0; i < Math.min(3, checkboxes.length); i++) {
+    await checkboxes[i].click();
+    await page.waitForTimeout(300);
   }
 
-  fs.writeFileSync(
-    "ibba_brokers_all.json",
-    JSON.stringify(jsonResponse, null, 2),
+  const submit = await page.$('button[type="submit"], input[type="submit"]');
+  if (submit) {
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle2" }),
+      submit.click(),
+    ]);
+  }
+
+  console.log("Scraping results...");
+
+  await page.waitForSelector(".broker-result, .broker-card, .result-item", { timeout: 10000 });
+  const results = await page.$$eval(".broker-result, .broker-card, .result-item", (cards) =>
+    cards.map((card) => {
+      const textContent = card.innerText;
+      const emailMatch = textContent.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+      const email = emailMatch ? emailMatch[0] : "N/A";
+
+      const firm = card.querySelector(".firm-name, .company-name")?.innerText || "N/A";
+      const contact = card.querySelector(".contact-name, .broker-name")?.innerText || "N/A";
+
+      return { firmName: firm, contactName: contact, email };
+    })
   );
-  console.log("✅ Data saved to ibba_brokers_all.json");
+
+  fs.writeFileSync("ibba_email_list.json", JSON.stringify(results, null, 2));
+  console.log(`✅ Scraped ${results.length} entries.`);
+  console.log("📁 Data saved to ibba_email_list.json");
 
   await browser.close();
-}
-
-run().catch((err) => {
-  console.error("Error:", err.message);
-  process.exit(1);
-});
+})();
