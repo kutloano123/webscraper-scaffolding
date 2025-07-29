@@ -1,72 +1,156 @@
-import puppeteer from "puppeteer-extra";
+// Import necessary modules
+import { connect } from "puppeteer-real-browser";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import puppeteerExtra from "puppeteer-extra";
 import fs from "fs";
+import path from "path";
 
-puppeteer.use(StealthPlugin());
+// Apply stealth plugin to avoid detection
+puppeteerExtra.use(StealthPlugin());
 
-(async () => {
-  const browser = await puppeteer.launch({ headless: false });
-  const page = await browser.newPage();
+// Validate the target URL
+function validateUrl(url) {
+  if (!url) {
+    console.error(" Please provide a URL: node webscraper.js <url>");
+    process.exit(1);
+  }
 
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-  );
+  try {
+    return new URL(url);
+  } catch {
+    console.error(" Invalid URL format:", url);
+    process.exit(1);
+  }
+}
 
-  console.log("Opening IBBA search page...");
-  await page.goto("https://www.ibba.org/find-a-business-broker/", {
-    waitUntil: "domcontentloaded",
-    timeout: 60000,
+const WEBSITE_URL = validateUrl("https://www.ibba.org/wp-json/brokers/all");
+
+// Ensure a clean, short file-safe name for the results file
+function sanitizeUrl(url) {
+  return url
+    .replace(/^https?:\/\//, "")
+    .replace(/[^\w\-]/g, "_")
+    .substring(0, 50);
+}
+
+// Ensure the output folder exists
+function ensureResultsDir(dir = "brokers") {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}
+
+// Generate a timestamp for naming files
+function generateTimestamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+// Build the path for the JSON output
+function buildFilePath(url, timestamp, folder = "brokers") {
+  const fileName = "ibba-brokers"; // static name for clarity
+  return path.join(folder, `${fileName}_${timestamp}.json`);
+}
+
+// Write data to file
+function writeJsonFile(filepath, data) {
+  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+  console.log(` Saved broker data to: ${filepath}`);
+}
+
+// Save the full results to a JSON file
+function saveResultsToFile(brokers, url) {
+  const timestamp = generateTimestamp();
+  ensureResultsDir();
+  const filePath = buildFilePath(url, timestamp);
+
+  const output = {
+    timestamp,
+    url,
+    totalBrokers: brokers.length,
+    brokers,
+  };
+
+  writeJsonFile(filePath, output);
+}
+
+// Detect if reCAPTCHA is present
+async function waitForRecaptcha(page) {
+  try {
+    await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 60000 });
+    console.log(" Detected reCAPTCHA iframe");
+  } catch {
+    console.log("   proceeding");
+  }
+}
+
+// Scroll to the bottom of the page to load dynamic content
+async function scrollToBottom(page) {
+  let previousHeight = 0;
+  while (true) {
+    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+    if (currentHeight === previousHeight) break;
+
+    previousHeight = currentHeight;
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+}
+
+// Fetch broker data via API call
+async function fetchBrokerData(page) {
+  return page.evaluate(async () => {
+    const response = await fetch("https://www.ibba.org/wp-json/brokers/all");
+    return await response.json();
   });
+}
 
-  // Check if there's a CAPTCHA
-  const recaptcha = await page.$('iframe[src*="recaptcha"]');
-  if (recaptcha) {
-    console.log("CAPTCHA detected. Please solve it manually...");
-    await page.waitForFunction(() => !document.querySelector('iframe[src*="recaptcha"]'), {
-      timeout: 180000,
+// Format broker data to only the required fields
+function transformBrokerData(brokerList) {
+  return brokerList.map(info => {
+    const firm = info.company || "N/A";
+    const fullName = `${info.first_name || ""} ${info.last_name || ""}`.trim() || "N/A";
+    const email = info.email || "N/A";
+
+    return {
+      firm,
+      contact_person: fullName,
+      email,
+    };
+  });
+}
+
+// Main browser automation and scraping logic
+async function runBrowser() {
+  let browser;
+  try {
+    const { browser: launchedBrowser, page } = await connect({
+      headless: false,
+      fingerprint: true,
+      turnstile: true,
+      plugins: [StealthPlugin()],
     });
-    console.log("CAPTCHA solved.");
+
+    browser = launchedBrowser;
+
+    await page.goto(WEBSITE_URL, { waitUntil: "networkidle2" });
+    console.log(" Loaded the IBBA broker page");
+
+    await waitForRecaptcha(page);
+    await scrollToBottom(page);
+
+    const rawData = await fetchBrokerData(page);
+    const cleanedData = transformBrokerData(rawData);
+
+    console.log(` Scraped ${cleanedData.length} brokers`);
+    saveResultsToFile(cleanedData, WEBSITE_URL);
+
+  } catch (error) {
+    console.error(" Scraping failed:", error.message);
+  } finally {
+    if (browser) await browser.close();
+    console.log("Browser closed");
   }
+}
 
-  await page.waitForTimeout(3000);
-
-  // Fill in zip code and select checkboxes
-  const input = await page.$('#zipSearchss');
-  if (input) await input.type("10001", { delay: 50 });
-
-  const checkboxes = await page.$$('input[type="checkbox"]');
-  for (let i = 0; i < Math.min(3, checkboxes.length); i++) {
-    await checkboxes[i].click();
-    await page.waitForTimeout(300);
-  }
-
-  const submit = await page.$('button[type="submit"], input[type="submit"]');
-  if (submit) {
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle2" }),
-      submit.click(),
-    ]);
-  }
-
-  console.log("Scraping results...");
-
-  await page.waitForSelector(".broker-result, .broker-card, .result-item", { timeout: 10000 });
-  const results = await page.$$eval(".broker-result, .broker-card, .result-item", (cards) =>
-    cards.map((card) => {
-      const textContent = card.innerText;
-      const emailMatch = textContent.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
-      const email = emailMatch ? emailMatch[0] : "N/A";
-
-      const firm = card.querySelector(".firm-name, .company-name")?.innerText || "N/A";
-      const contact = card.querySelector(".contact-name, .broker-name")?.innerText || "N/A";
-
-      return { firmName: firm, contactName: contact, email };
-    })
-  );
-
-  fs.writeFileSync("ibba_email_list.json", JSON.stringify(results, null, 2));
-  console.log(`✅ Scraped ${results.length} entries.`);
-  console.log("📁 Data saved to ibba_email_list.json");
-
-  await browser.close();
-})();
+// Start the scraper
+runBrowser();

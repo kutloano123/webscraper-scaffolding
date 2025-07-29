@@ -19,28 +19,26 @@ async function scrapeSite(url) {
   const browser = await puppeteer.launch({
     headless: true,
     executablePath:
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", // Adjust this path if needed
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
   const page = await browser.newPage();
   await page.goto(url, { waitUntil: "networkidle2" });
 
-  // Scroll to bottom to load dynamic content
   await autoScroll(page);
 
-  // Get full HTML content
   const html = await page.content();
 
-  // Generate a safe filename
-  const filename = url
+  const filenameBase = url
     .replace(/https?:\/\//, "")
     .replace(/[^a-z0-9]/gi, "_")
     .toLowerCase();
-  const filepath = path.resolve(`./${filename}.html`);
 
-  fs.writeFileSync(filepath, html);
-  console.log(`Saved HTML to ${filepath}\n`);
+  // Save the full HTML page
+  const htmlFilepath = path.resolve(`./${filenameBase}.html`);
+  fs.writeFileSync(htmlFilepath, html);
+  console.log(`Saved HTML to ${htmlFilepath}\n`);
 
   // Extract links and images
   const { links, images } = await page.evaluate(() => {
@@ -83,6 +81,7 @@ async function scrapeSite(url) {
   return {
     links: removeDuplicates(links),
     images: removeDuplicates(images),
+    baseFilename: filenameBase,
   };
 }
 
@@ -107,13 +106,23 @@ async function autoScroll(page) {
 (async () => {
   try {
     console.log(`Scraping page: ${inputUrl}\n`);
-    const { links, images } = await scrapeSite(inputUrl);
+    const { links, images, baseFilename } = await scrapeSite(inputUrl);
 
     console.log(`Links (${links.length}):`);
     links.forEach((link) => console.log(link));
 
     console.log(`\nImages (${images.length}):`);
     images.forEach((img) => console.log(img));
+
+    // Save links to JSON
+    const linksFile = path.resolve(`./${baseFilename}_links.json`);
+    fs.writeFileSync(linksFile, JSON.stringify(links, null, 2));
+    console.log(`\nSaved links to ${linksFile}`);
+
+    // Save images to JSON
+    const imagesFile = path.resolve(`./${baseFilename}_images.json`);
+    fs.writeFileSync(imagesFile, JSON.stringify(images, null, 2));
+    console.log(`Saved images to ${imagesFile}`);
   } catch (err) {
     console.error("Error:", err.message);
   }
