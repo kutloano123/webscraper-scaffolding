@@ -1,102 +1,50 @@
-// Import necessary modules
 import { connect } from "puppeteer-real-browser";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import puppeteerExtra from "puppeteer-extra";
 import fs from "fs";
 import path from "path";
 
-// Apply stealth plugin to avoid detection
+// Enable stealth mode
 puppeteerExtra.use(StealthPlugin());
 
-// Validate the target URL
-function validateUrl(url) {
-  if (!url) {
-    console.error(" Please provide a URL: node webscraper.js <url>");
-    process.exit(1);
-  }
+// Target IBBA API
+const IBBA_URL = "https://www.ibba.org/wp-json/brokers/all";
 
-  try {
-    return new URL(url);
-  } catch {
-    console.error(" Invalid URL format:", url);
-    process.exit(1);
-  }
-}
 
-const WEBSITE_URL = validateUrl("https://www.ibba.org/wp-json/brokers/all");
+const OUTPUT_FILE = path.join(process.cwd(), "ibba-brokers.json");
 
-// Ensure a clean, short file-safe name for the results file
-function sanitizeUrl(url) {
-  return url
-    .replace(/^https?:\/\//, "")
-    .replace(/[^\w\-]/g, "_")
-    .substring(0, 50);
-}
-
-// Ensure the output folder exists
-function ensureResultsDir(dir = "brokers") {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-// Generate a timestamp for naming files
-function generateTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-// Build the path for the JSON output
-function buildFilePath(url, timestamp, folder = "brokers") {
-  const fileName = "ibba-brokers"; // static name for clarity
-  return path.join(folder, `${fileName}_${timestamp}.json`);
-}
-
-// Write data to file
-function writeJsonFile(filepath, data) {
-  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
-  console.log(` Saved broker data to: ${filepath}`);
-}
-
-// Save the full results to a JSON file
-function saveResultsToFile(brokers, url) {
-  const timestamp = generateTimestamp();
-  ensureResultsDir();
-  const filePath = buildFilePath(url, timestamp);
-
+//  JSON to file
+function saveBrokers(brokers) {
   const output = {
-    timestamp,
-    url,
     totalBrokers: brokers.length,
     brokers,
   };
-
-  writeJsonFile(filePath, output);
+  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(output, null, 2));
+  console.log(`Saved broker data to: ${OUTPUT_FILE}`);
 }
 
-// Detect if reCAPTCHA is present
 async function waitForRecaptcha(page) {
   try {
     await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 60000 });
-    console.log(" Detected reCAPTCHA iframe");
+    console.log("Detected reCAPTCHA iframe");
   } catch {
-    console.log("   proceeding");
+    console.log("No reCAPTCHA detected, continuing");
   }
 }
 
-// Scroll to the bottom of the page to load dynamic content
+
 async function scrollToBottom(page) {
   let previousHeight = 0;
   while (true) {
     const currentHeight = await page.evaluate(() => document.body.scrollHeight);
     if (currentHeight === previousHeight) break;
-
     previousHeight = currentHeight;
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
   }
 }
 
-// Fetch broker data via API call
+// Fetch broker JSON using in-page fetch
 async function fetchBrokerData(page) {
   return page.evaluate(async () => {
     const response = await fetch("https://www.ibba.org/wp-json/brokers/all");
@@ -104,23 +52,17 @@ async function fetchBrokerData(page) {
   });
 }
 
-// Format broker data to only the required fields
-function transformBrokerData(brokerList) {
-  return brokerList.map(info => {
-    const firm = info.company || "N/A";
-    const fullName = `${info.first_name || ""} ${info.last_name || ""}`.trim() || "N/A";
-    const email = info.email || "N/A";
 
-    return {
-      firm,
-      contact_person: fullName,
-      email,
-    };
-  });
+function cleanBrokers(raw) {
+  return raw.map(b => ({
+    firm: b.company || "N/A",
+    contact_person: `${b.first_name || ""} ${b.last_name || ""}`.trim() || "N/A",
+    email: b.email || "N/A",
+  }));
 }
 
-// Main browser automation and scraping logic
-async function runBrowser() {
+// Main run
+async function run() {
   let browser;
   try {
     const { browser: launchedBrowser, page } = await connect({
@@ -132,25 +74,25 @@ async function runBrowser() {
 
     browser = launchedBrowser;
 
-    await page.goto(WEBSITE_URL, { waitUntil: "networkidle2" });
-    console.log(" Loaded the IBBA broker page");
+    await page.goto(IBBA_URL, { waitUntil: "networkidle2" });
+    console.log("Loaded broker API page");
 
     await waitForRecaptcha(page);
     await scrollToBottom(page);
 
     const rawData = await fetchBrokerData(page);
-    const cleanedData = transformBrokerData(rawData);
+    const cleaned = cleanBrokers(rawData);
 
-    console.log(` Scraped ${cleanedData.length} brokers`);
-    saveResultsToFile(cleanedData, WEBSITE_URL);
+    console.log(`Scraped ${cleaned.length} brokers`);
+    saveBrokers(cleaned);
 
-  } catch (error) {
-    console.error(" Scraping failed:", error.message);
+  } catch (err) {
+    console.error("Scraping failed:", err.message);
   } finally {
     if (browser) await browser.close();
     console.log("Browser closed");
   }
 }
 
-// Start the scraper
-runBrowser();
+
+run();
